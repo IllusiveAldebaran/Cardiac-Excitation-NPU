@@ -11,8 +11,7 @@ from matplotlib.colors import LinearSegmentedColormap
 import time
 
 # constants
-a = 0.1
-b = 0.1
+a = b = 0.1 # = 0.1 in original
 kk = 8.0
 M1 = 0.07
 M2 = 0.3
@@ -34,9 +33,9 @@ def main():
   m = n
   plot_freq = args.p
 
-  E       = torch.zeros((m+2), (n+2), dtype=torch.bfloat16);
-  E_prev  = torch.zeros((m+2), (n+2), dtype=torch.bfloat16);
-  R       = torch.zeros((m+2), (n+2), dtype=torch.bfloat16);
+  E       = torch.zeros((m+2), (n+2), dtype=torch.float16);
+  E_prev  = torch.zeros((m+2), (n+2), dtype=torch.float16);
+  R       = torch.zeros((m+2), (n+2), dtype=torch.float16);
 
   dx = 1.0/(n-1);
   rp= kk*(b+1)*(b+1)/4;
@@ -92,7 +91,6 @@ def main():
               (1.0, "red"),    # value = 1
               ]
           )
-  bounds = [0, 0.5]  # boundaries between the categories
 
   plt.ion()  # turn on interactive mode
   fig, ax = plt.subplots()
@@ -103,30 +101,37 @@ def main():
   fig.colorbar(img, ax=ax, ticks=[0, 0.75, 1])
   img.set_clim(0, 1)
 
+
+  # move to cuda device if available
+  if torch.cuda.is_available():
+    print("Cuda device found. Moving Meshes to device.")
+    cuda_dev = torch.device("cuda")
+    E_prev.to(cuda_dev)
+    E.to(cuda_dev)
+    R.to(cuda_dev)
+
   for niter in range(niters):
 
     if (id_y == 0):
       #print('Processor %d has top side edges to fill\n', myrank);
-      E_prev[0, 1:-1] = E_prev[-2, 1:-1]
+      E_prev[-1, 1:-1] = E_prev[-3, 1:-1]
 
     if (id_y == py - 1):
       #printf("Processor %d has bottom side edges to fill\n", myrank);
-      E_prev[-1, 1:-1] = E_prev[-2, 1:-1]
+      E_prev[0, 1:-1] = E_prev[2, 1:-1]
 
     if (id_x == px - 1):
       #printf("Processor %d has right side edges to fill\n", myrank);
-      E_prev[1:-1, -1] = E_prev[1:-1, -2]
+      E_prev[1:-1, -1] = E_prev[1:-1, -3]
 
     if (id_x == 0):
       #printf("Processor %d has left side edges to fill\n", myrank);
       E_prev[1:-1, 0] = E_prev[1:-1, 2]
 
 
-    interior = (slice(1, ptw+1), slice(1, pth+1))
-
-    E_int = E[interior]
-    E_prev_int = E_prev[interior]
-    R_int = R[interior]
+    E_int = E[1:-1, 1:-1]
+    E_prev_int = E_prev[1:-1, 1:-1]
+    R_int = R[1:-1, 1:-1]
 
     # Solve the ODE, advancing excitation and recovery variables
     E_int[:] = -dt*(kk*E_prev_int[:]*(E_prev_int[:]-a)*(E_prev_int[:]-1)+E_prev_int[:]*R_int[:]);
@@ -134,12 +139,13 @@ def main():
 
     # PDE update (diffusion term / Laplacian)
     laplacian = (
-        E_prev[interior[0], 2:ptw+2] +
-        E_prev[interior[0], 0:pth]   +
-        E_prev[2:ptw+2, interior[1]] +
-        E_prev[0:ptw, interior[1]]   -
-        4 * E_prev_int
-    )
+              E_prev[2:  , 1:-1]
+            + E_prev[ :-2, 1:-1]
+            + E_prev[1:-1,  :-2]
+            + E_prev[1:-1, 2:  ]
+            - 4 * E_prev[1:-1, 1:-1]  
+        )
+
     E_int[:] += E_prev_int + alpha * laplacian
 
     # suggestion from chatgpt is convolution:
