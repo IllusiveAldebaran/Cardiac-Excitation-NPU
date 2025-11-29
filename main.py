@@ -121,19 +121,32 @@ def main():
       #printf("Processor %d has left side edges to fill\n", myrank);
       E_prev[1:-1, 0] = E_prev[1:-1, 2]
 
+
+    interior = (slice(1, ptw+1), slice(1, pth+1))
+
+    E_int = E[interior]
+    E_prev_int = E_prev[interior]
+    R_int = R[interior]
+
     # Solve the ODE, advancing excitation and recovery variables
-    for i in range(1, ptw+1):
-      for j in range(1, pth+1):
-        E[i][j] = -dt*(kk*E_prev[i][j]*(E_prev[i][j]-a)*(E_prev[i][j]-1)+E_prev[i][j]*R[i][j]);
-        R[i][j] += dt*(epsilon+M1* R[i][j]/( E_prev[i][j]+M2))*(-R[i][j]-kk*E_prev[i][j]*(E_prev[i][j]-b-1));
+    E_int[:] = -dt*(kk*E_prev_int[:]*(E_prev_int[:]-a)*(E_prev_int[:]-1)+E_prev_int[:]*R_int[:]);
+    R_int[:] += dt*(epsilon+M1* R_int[:]/( E_prev_int[:]+M2))*(-R_int[:]-kk*E_prev_int[:]*(E_prev_int[:]-b-1));
 
-        # This is PDE case. It may be worth again using an unfused loop because of the adjacent memory access patterns
-        E[i][j] += E_prev[i][j]+alpha*(E_prev[i][j+1]+E_prev[i][j-1]-4*E_prev[i][j]+E_prev[i+1][j]+E_prev[i-1][j])
+    # PDE update (diffusion term / Laplacian)
+    laplacian = (
+        E_prev[interior[0], 2:ptw+2] +
+        E_prev[interior[0], 0:pth]   +
+        E_prev[2:ptw+2, interior[1]] +
+        E_prev[0:ptw, interior[1]]   -
+        4 * E_prev_int
+    )
+    E_int[:] += E_prev_int + alpha * laplacian
 
-    # Solve for the excitation, a PDE edge cases
-    #for i in range(1, ptw+1):
-    #  for j in range(1, pth+1):
-    #    E[i][j] += E_prev[i][j]+alpha*(E_prev[i][j+1]+E_prev[i][j-1]-4*E_prev[i][j]+E_prev[i+1][j]+E_prev[i-1][j])
+    # suggestion from chatgpt is convolution:
+    # Not implementing or trying until after NPU is targetted. Then we can play around
+    #kernel = torch.tensor([[0,1,0],[1,-4,1],[0,1,0]], dtype=E.dtype, device=E.device)
+    #laplacian = torch.nn.functional.conv2d(E_prev.unsqueeze(0).unsqueeze(0), kernel.unsqueeze(0).unsqueeze(0), padding=1)
+
 
 
 #///////////////   MAIN KERNEL END   //////////////////////////////////////////
