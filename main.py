@@ -34,9 +34,9 @@ def main():
   m = n
   plot_freq = args.p
 
-  E       = torch.zeros((m+2)*(n+2), dtype=torch.bfloat16);
-  E_prev  = torch.zeros((m+2)*(n+2), dtype=torch.bfloat16);
-  R       = torch.zeros((m+2)*(n+2), dtype=torch.bfloat16);
+  E       = torch.zeros((m+2), (n+2), dtype=torch.bfloat16);
+  E_prev  = torch.zeros((m+2), (n+2), dtype=torch.bfloat16);
+  R       = torch.zeros((m+2), (n+2), dtype=torch.bfloat16);
 
   dx = 1.0/(n-1);
   rp= kk*(b+1)*(b+1)/4;
@@ -62,30 +62,24 @@ def main():
   py = 1
 
 
-  for i in range(0, (m+1)*(n+2)):
-    E_prev[i] = R[i] = 0;
+  # I don't know why this chooses to go from range [1,m+1). 
+  # I notice in my previous code I did [1,m+2), but going back to the first version
+  # of the problem it went to m+1, so that's what I'm doing here
+  for i in range(1, m+1):
+    for j in range(n+2):
+      #// Need to compute (n+1)/2 rather than n/2 to work with odd numbers
+      if (j == 0 or j == (n+1) or j < ((n+1)//2+1) ):
+          continue
+      else:
+          E_prev[i][j] = 1.0;
   
-  for i in range(n+2, (m+2)*(n+2)):
-    colIndex = i % (n+2) #		// gives the base index (first row's) of the current index
-  
-    #// Need to compute (n+1)/2 rather than n/2 to work with odd numbers
-    if (colIndex == 0 or colIndex == (n+1) or colIndex < ((n+1)/2+1) ):
+  for i in range(m+2):
+    for j in range(n+2):
+      if (j == 0 or j == (n+1) or i < ((m+1)//2+1)-1):
+          #print(rowIndex, ((m+1)/2+1)-1)
         continue
-    else:
-        E_prev[i] = 1.0;
-  
-  
-  
-  for i in range(0, (m+2)*(n+2)):
-    rowIndex = i // (n+2);	# gives the current row number in 2D array representation
-    colIndex = i % (n+2);		# gives the base index (first row's) of the current index
-  
-    # Need to compute (m+1)/2 rather than m/2 to work with odd numbers
-    if (colIndex == 0 or colIndex == (n+1) or rowIndex < ((m+1)/2+1)-1):
-        #print(rowIndex, ((m+1)/2+1)-1)
-      continue
-    else:
-        R[i] = 1.0
+      else:
+          R[i][j] = 1.0
 
 
 
@@ -111,68 +105,36 @@ def main():
 
   for niter in range(niters):
 
-    # Solve the ODE, advancing excitation and recovery variables
-    for j in range(1, pth+1):
-      tile_row   = (j)*(row_length);
-      # offset tile_row
-      for i in range(1, ptw+1):
-        E[i+tile_row] = -dt*(kk*E_prev[i+tile_row]*(E_prev[i+tile_row]-a)*(E_prev[i+tile_row]-1)+E_prev[i+tile_row]*R[i+tile_row]);
-        R[i+tile_row] += dt*(epsilon+M1* R[i+tile_row]/( E_prev[i+tile_row]+M2))*(-R[i+tile_row]-kk*E_prev[i+tile_row]*(E_prev[i+tile_row]-b-1));
-
-
-    # Solve for the excitation, a PDE edge cases, with THE BORDERS
-    for j in range(2, pth):
-      tile_row = j*(row_length); # iterative row offset
-      # offset tile_row
-      for i in range(2, ptw):
-        E[i+tile_row] += E_prev[i+tile_row]+alpha*(E_prev[i+tile_row+1]+E_prev[i+tile_row-1]-4*E_prev[i+tile_row]+E_prev[i+tile_row + row_length]+E_prev[i+tile_row - row_length])
-
-
     if (id_y == 0):
       #print('Processor %d has top side edges to fill\n', myrank);
-      edge = 1; # get top ghost cells
-      for i in range(ptw):
-        E_prev[i+edge] = E_prev[i+edge + (row_length)*2]
-
+      E_prev[0, 1:-1] = E_prev[-2, 1:-1]
 
     if (id_y == py - 1):
       #printf("Processor %d has bottom side edges to fill\n", myrank);
-      edge = (pth + 1) * (row_length) + 1
-      for i in range(ptw):
-        E_prev[i+edge] = E_prev[i+edge - (row_length)*2]
-
+      E_prev[-1, 1:-1] = E_prev[-2, 1:-1]
 
     if (id_x == px - 1):
       #printf("Processor %d has right side edges to fill\n", myrank);
-      edge = row_length + ptw + 1
-      for j in range(pth):
-        E_prev[j*(row_length)+edge] = E_prev[j*(row_length) - 2+edge]
+      E_prev[1:-1, -1] = E_prev[1:-1, -2]
 
-    if (id_x == 0) :
+    if (id_x == 0):
       #printf("Processor %d has left side edges to fill\n", myrank);
-      edge = row_length
-      for j in range(pth):
-        E_prev[j*(row_length)+edge] = E_prev[j*(row_length) + 2+edge]
+      E_prev[1:-1, 0] = E_prev[1:-1, 2]
 
-
-    ## Solve for the excitation, a PDE edge cases
-    ## just around the tile though
-
-    ## top (row_length offset)
+    # Solve the ODE, advancing excitation and recovery variables
     for i in range(1, ptw+1):
-      E[i+row_length] += E_prev[i+row_length]+alpha*(E_prev[i+1+row_length]+E_prev[i-1+row_length]-4*E_prev[i+row_length]+E_prev[i + row_length+row_length]+E_prev[i - row_length+row_length]);
+      for j in range(1, pth+1):
+        E[i][j] = -dt*(kk*E_prev[i][j]*(E_prev[i][j]-a)*(E_prev[i][j]-1)+E_prev[i][j]*R[i][j]);
+        R[i][j] += dt*(epsilon+M1* R[i][j]/( E_prev[i][j]+M2))*(-R[i][j]-kk*E_prev[i][j]*(E_prev[i][j]-b-1));
 
-    #  bottom (row_length offset)
-    for i in range(1, ptw+1):
-      E[i+pth*row_length] += E_prev[i+pth*row_length]+alpha*(E_prev[i+1+pth*row_length]+E_prev[i-1+pth*row_length]-4*E_prev[i+pth*row_length]+E_prev[i + row_length+pth*row_length]+E_prev[i - row_length+pth*row_length]);
-    #for (j = 2; j < pth; j++) { 
+        # This is PDE case. It may be worth again using an unfused loop because of the adjacent memory access patterns
+        E[i][j] += E_prev[i][j]+alpha*(E_prev[i][j+1]+E_prev[i][j-1]-4*E_prev[i][j]+E_prev[i+1][j]+E_prev[i-1][j])
 
-    # sides
-    for j in range(2, pth):
-      tile_row = j*(row_length); # // iterative row offset
-      # tilw_row offset
-      E[1+tile_row] += E_prev[1+tile_row]+alpha*(E_prev[1+1+tile_row]+E_prev[1-1+tile_row]-4*E_prev[1+tile_row]+E_prev[1 + row_length+tile_row]+E_prev[1 - row_length+tile_row]);
-      E[ptw+tile_row] += E_prev[ptw+tile_row]+alpha*(E_prev[ptw+1+tile_row]+E_prev[ptw-1+tile_row]-4*E_prev[ptw+tile_row]+E_prev[ptw + row_length+tile_row]+E_prev[ptw - row_length+tile_row]);
+    # Solve for the excitation, a PDE edge cases
+    #for i in range(1, ptw+1):
+    #  for j in range(1, pth+1):
+    #    E[i][j] += E_prev[i][j]+alpha*(E_prev[i][j+1]+E_prev[i][j-1]-4*E_prev[i][j]+E_prev[i+1][j]+E_prev[i-1][j])
+
 
 #///////////////   MAIN KERNEL END   //////////////////////////////////////////
 
@@ -180,7 +142,7 @@ def main():
     E_prev, E = E, E_prev
 
     if (niter % plot_freq == 0):
-      img.set_data(E.reshape(m+2, n+2).float().cpu().numpy())
+      img.set_data(E.float().cpu().numpy())
       ax.set_title(f"Excitation Mesh iter={niter}")
       fig.canvas.draw()
       fig.canvas.flush_events()
