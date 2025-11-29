@@ -10,13 +10,14 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 import time
 
-# constants
-a = b = 0.1 # = 0.1 in original
-kk = 8.0
-M1 = 0.07
-M2 = 0.3
+# constants, original float64 simulation values commented out
+a = 0.155 # 0.1
+b = 0.155 # 0.1
+kk = 8.0  # 8.0
+M1 = 0.07 # 0.07
+M2 = 0.3  # 0.3
 epsilon = 0.01
-d = 5e-5
+d = 5e-5  #e-5
 
 
 def main():
@@ -33,9 +34,9 @@ def main():
   m = n
   plot_freq = args.p
 
-  E       = torch.zeros((m+2), (n+2), dtype=torch.float16);
-  E_prev  = torch.zeros((m+2), (n+2), dtype=torch.float16);
-  R       = torch.zeros((m+2), (n+2), dtype=torch.float16);
+  E       = torch.zeros((m+2), (n+2), dtype=torch.bfloat16);
+  E_prev  = torch.zeros((m+2), (n+2), dtype=torch.bfloat16);
+  R       = torch.zeros((m+2), (n+2), dtype=torch.bfloat16);
 
   dx = 1.0/(n-1);
   rp= kk*(b+1)*(b+1)/4;
