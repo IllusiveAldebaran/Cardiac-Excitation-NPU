@@ -28,3 +28,4 @@ It is also a guide on how to using the Vitis C++ Graph Code and AIE Kernels, an 
 For development please read the [IRON Repo](https://github.com/amd/IRON). It's relatively new though. More fleshed out is the [MLIR-AIE Repo](https://github.com/Xilinx/mlir-aie).
 
 
+[Guided Graph](https://docs.amd.com/p/ai-engine-development)
