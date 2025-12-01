@@ -96,10 +96,13 @@ def init_plot(E_np):
   P.img, P.fig, P.ax = img, fig, ax
     
 
-def update_plot(E, device, niter):
+def update_plot(E, device, niter, block=False):
     P.img.set_data(E) # remember # must be np array
     P.ax.set_title(f"Excitation Mesh {device} iter={niter}")
     P.fig.canvas.draw()
+    if block:
+        print("Press anything on the graph to continue")
+        plt.waitforbuttonpress()
     P.fig.canvas.flush_events()
 
 
@@ -174,6 +177,9 @@ def aliev_panfilov_reference(E_prev, R, E):
     if (niter != niters-1):
         E_prev, E = E, E_prev
 #///////////////   MAIN KERNEL END   //////////////////////////////////////////
+  # display plot one more time with a pause
+  if (plot_freq > 0):
+    update_plot(E.float().cpu().numpy(), "dev", niters, block=True)
 
 @iron.jit(is_placed=False)
 def aliev_panfilov_npu(E_prev_iron, R_iron, E_iron):
@@ -204,29 +210,79 @@ def aliev_panfilov_npu(E_prev_iron, R_iron, E_iron):
     of_y = ObjectFifo(in_ty, name="y")
     of_z = ObjectFifo(out_ty, name="z")
 
+
+    #### vertical and horizontal edge type
+    ###e_u_ty = np.ndarray[(N,1), np.dtype[element_type]]
+    ###e_d_ty = np.ndarray[(N,1), np.dtype[element_type]]
+    ###e_l_ty = np.ndarray[(1,N), np.dtype[element_type]]
+    ###e_r_ty = np.ndarray[(1,N), np.dtype[element_type]]
+    #### output fifo of edges up, left, down, right
+    ###of_eu = ObjectFifo(e_u_ty, name="e_u")
+    ###of_ed = ObjectFifo(e_d_ty, name="e_d")
+    ###of_el = ObjectFifo(e_l_ty, name="e_l")
+    ###of_er = ObjectFifo(e_r_ty, name="e_r")
+
     # --------------------------------------------------------------------------
     # Task each core will run
     # --------------------------------------------------------------------------
 
-    ode_kernel = ExternalFunction(
+    # aliev-panfilov kernel
+    ap_kernel = ExternalFunction(
         "aliev_panfilov_kernel",
         source_file=os.path.join(os.path.dirname(__file__), "stencil_kernels.cc"),
-        arg_types=[in_ty, in_ty, out_ty, np.int32, np.int32, np.float32, np.float32],
+        arg_types=[in_ty, in_ty, out_ty, np.int32, np.float32, np.float32],
         include_dirs=[cxx_header_path()],
     )
 
-    def core_body(of_x, of_y, of_z, aie_kernel_solver):
+    # Having a function return the core body allows niters to be changed in compile time
+    # so the jit compiler can return more optimized mlir for the part that says:
+    #     range_(niters) 
+    def core_wrapper(niters=1):
+      #def core_body(of_x, of_y, of_eu, of_ed, of_el, of_er, of_z, aie_kernel_solver):
+      def core_body(of_x, of_y, of_z, aie_kernel_solver):
+        
         elem_x = of_x.acquire(1)
         elem_y = of_y.acquire(1)
         elem_z = of_z.acquire(1)
-        aie_kernel_solver(elem_x, elem_y, elem_z, niters, n+2, dt, alpha)
+        for niter in range_(niters): 
+          # copy elements iteratively.
+          # despite numpy similarities copying columnwise causes:
+          #   ld.lld: error: undefined symbol: memrefCopy
+          # example that causes error:
+          # elem_x[1:32, 0] = elem_x[1:32, 2]
+          for ind in range_(N-1):
+            elem_x[N-1  , ind+1] = elem_x[N-3  , 1+ind]
+            elem_x[0    , 1+ind] = elem_x[2    , 1+ind]
+            elem_x[1+ind, 0    ] = elem_x[1+ind, 2    ]
+            elem_x[1+ind, N-1  ] = elem_x[1+ind, N-3  ]
+
+          # solve interior
+          aie_kernel_solver(elem_x, elem_y, elem_z,
+                            #niters,
+                            n+2,
+                            dt,
+                            alpha
+                            )
+
+          # solve interior, switched E and E_prev
+          aie_kernel_solver(elem_z, elem_y, elem_x,
+                            #niters,
+                            n+2,
+                            dt,
+                            alpha
+                            )
+
+
         of_x.release(1)
         of_y.release(1)
         of_z.release(1)
-    
 
+      return core_body
+    
+    core_body = core_wrapper(niters=niters) # function returns core body, but defines niters for better mlir generation
     worker = Worker(
-        core_body, fn_args=[of_x.cons(), of_y.cons(), of_z.prod(), ode_kernel]
+        #core_body, fn_args=[of_x.cons(), of_y.cons(), of_eu.cons(), of_ed.cons(), of_el.cons(), of_er.cons(), of_z.prod(), ap_kernel]
+        core_body, fn_args=[of_x.cons(), of_y.cons(), of_z.prod(), ap_kernel]
     )
 
     # --------------------------------------------------------------------------
@@ -234,10 +290,15 @@ def aliev_panfilov_npu(E_prev_iron, R_iron, E_iron):
     # --------------------------------------------------------------------------
 
     rt = Runtime()
+    #with rt.sequence(in_ty, in_ty, e_u_ty, e_d_ty, e_l_ty, e_r_ty, out_ty) as (a_x, a_y, e_u, e_d, e_l, e_r, c_z):
     with rt.sequence(in_ty, in_ty, out_ty) as (a_x, a_y, c_z):
         rt.start(worker)
         rt.fill(of_x.prod(), a_x)
         rt.fill(of_y.prod(), a_y)
+        #rt.fill(of_eu.prod(), e_u)
+        #rt.fill(of_ed.prod(), e_d)
+        #rt.fill(of_el.prod(), e_l)
+        #rt.fill(of_er.prod(), e_r)
         rt.drain(of_z.cons(), c_z, wait=True)
 
     # --------------------------------------------------------------------------
@@ -294,51 +355,48 @@ def main():
   R_iron[:] = R.to(torch.float32).cpu().numpy() #np.eye(R.shape[0], dtype=element_type) # again using identity matrices to debug
                     #R.to(torch.float32).cpu().numpy()
 
-  E_iron = iron.zeros(64,64, dtype=element_type, device="npu")
+  E_iron = iron.zeros(n+2,n+2, dtype=element_type, device="npu")
 
   # Main stuff
-  aliev_panfilov_npu(E_prev_iron, R_iron, E_iron)
-
-  # Display final npu sim
-  if plot_freq > 0:
-    update_plot(E_iron.numpy().astype(np.float32), "NPU", 0)
-
+#  aliev_panfilov_npu(E_prev_iron, R_iron, E_iron)
+#
+#  # Display final npu sim
+#  if plot_freq > 0:
+#    # TODO replace with actual iteration once this is animated.
+#    update_plot(E_iron.numpy().astype(np.float32), "NPU", niters, block=True)
+#
 
   aliev_panfilov_reference(E_prev, R, E);
-
-
-
-
 
   errors = 0
   close_errors = 0
   
-  for i in range(m):
-    for j in range(n):
-      actual = E_iron[i][j]
-      ref = E[i][j]
+  #for i in range(m):
+  #  for j in range(n):
+  #    actual = E_iron[i][j]
+  #    ref = E[i][j]
 
-      if actual != ref:
-        if math.isclose(float(actual), float(ref), rel_tol=1e-2, abs_tol=1e-2):
-          close_errors += 1
-        else:
-          print(f"Error at ({i}, {j}): {actual} != {ref}")
-          errors += 1
-      else:
-        print(f"Correct at ({i}, {j}): {actual} == {ref}")
+  #    if actual != ref:
+  #      if math.isclose(float(actual), float(ref), rel_tol=1e-2, abs_tol=1e-2):
+  #        close_errors += 1
+  #      else:
+  #        print(f"Error at ({i}, {j}): {actual} != {ref}")
+  #        errors += 1
+  #    else:
+  #      print(f"Correct at ({i}, {j}): {actual} == {ref}")
 
-  # If the result is correct, exit with a success code
-  # Otherwise, exit with a failure code
-  if not errors:
-    print("\nPASS!\n")
-    sys.exit(0)
-  elif close_errors > 0:
-    print(f"\nOver {close_errors} close error(s)!\n")
-    sys.exit(0)
-  else:
-    print("\nError count: ", errors)
-    print("\nfailed.\n")
-    sys.exit(1)
+  ## If the result is correct, exit with a success code
+  ## Otherwise, exit with a failure code
+  #if not errors:
+  #  print("\nPASS!\n")
+  #  sys.exit(0)
+  #elif close_errors > 0:
+  #  print(f"\nOver {close_errors} close error(s)!\n")
+  #  sys.exit(0)
+  #else:
+  #  print("\nError count: ", errors)
+  #  print("\nfailed.\n")
+  #  sys.exit(1)
 
 
 

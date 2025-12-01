@@ -15,7 +15,7 @@ float d = 5e-5;
 // Simulation has a few variables that are a bit unecessary at the moment
 // For example, n=64 is the only thing that works.
 void aliev_panfilov_kernel(bfloat16 *__restrict A, bfloat16 *__restrict B, bfloat16 *__restrict C,
-		int niters, 
+		//int niters, // commented out for reason explained in the commented out niter loop. Delete in a later commit
 		int n, 
 		float dt,
 		float alpha
@@ -25,31 +25,36 @@ void aliev_panfilov_kernel(bfloat16 *__restrict A, bfloat16 *__restrict B, bfloa
   bfloat16* R = B;
   bfloat16* E = C;
 
+  // Outer loop removed to add to the device in python.
+  // As well as the ghost/edge cells for later tile-tile movement
+  // Since the IRON output fifos will need exchange these
+  //
+
   // niter loop
-  for(int niter = 0; niter < niters; ++niter){
+  //for(int niter = 0; niter < niters; ++niter){
 
-    // calculate ghost cells and edges first...
-    for(int i = 1; i < n-1; ++i){
-	E_prev[i]=E_prev[i+2*n]; // top
-	E_prev[(n-1)*n+i]=E_prev[(n-3)*n+i]; // bottom
-	E_prev[(i+1)*n-1]=E_prev[(i+1)*n-3]; // right
-	E_prev[i*n]=E_prev[i*n+2]; // left
+  // calculate ghost cells and edges first...
+  //for(int i = 1; i < n-1; ++i){
+  //    E_prev[i]=E_prev[i+2*n]; // top
+  //    E_prev[(n-1)*n+i]=E_prev[(n-3)*n+i]; // bottom
+  //    E_prev[(i+1)*n-1]=E_prev[(i+1)*n-3]; // right
+  //    E_prev[i*n]=E_prev[i*n+2]; // left
+  //}
+
+  // Look at all interior cells [1,n-1)[1,n-1) (0 based indexing obv)
+  for(int i = 1; i < n-1; ++i){
+    for(int j = 1; j < n-1; ++j){
+        E[i*n+j] = -dt*(kk*E_prev[i*n+j]*(E_prev[i*n+j]-a)*(E_prev[i*n+j]-1)+E_prev[i*n+j]*R[i*n+j]);
+        R[i*n+j] += dt*(epsilon+M1* R[i*n+j]/( E_prev[i*n+j]+M2))*(-R[i*n+j]-kk*E_prev[i*n+j]*(E_prev[i*n+j]-b-1));
+        E[i*n+j] += E_prev[i*n+j]+alpha*(E_prev[i*n+j+1]+E_prev[i*n+j-1]-4*E_prev[i*n+j]+E_prev[i*n+j + (n)]+E_prev[i*n+j - (n)]);
     }
-
-    // Look at all interior cells [1,n-1)[1,n-1) (0 based indexing obv)
-    for(int i = 1; i < n-1; ++i){
-      for(int j = 1; j < n-1; ++j){
-          E[i*n+j] = -dt*(kk*E_prev[i*n+j]*(E_prev[i*n+j]-a)*(E_prev[i*n+j]-1)+E_prev[i*n+j]*R[i*n+j]);
-          R[i*n+j] += dt*(epsilon+M1* R[i*n+j]/( E_prev[i*n+j]+M2))*(-R[i*n+j]-kk*E_prev[i*n+j]*(E_prev[i*n+j]-b-1));
-          E[i*n+j] += E_prev[i*n+j]+alpha*(E_prev[i*n+j+1]+E_prev[i*n+j-1]-4*E_prev[i*n+j]+E_prev[i*n+j + (n)]+E_prev[i*n+j - (n)]);
-      }
-    }
-
-    // swap pointers
-    bfloat16* tmp = E_prev;
-    E_prev = E;
-    E = tmp;
   }
+
+  // swap pointers
+  //bfloat16* tmp = E_prev;
+  //E_prev = E;
+  //E = tmp;
+  //}
   event1();
 
 }
